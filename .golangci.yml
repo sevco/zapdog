@@ -1,0 +1,71 @@
+# .golangci.yml
+linters:
+  disable-all: true
+  enable:
+    - bodyclose
+    - deadcode
+    - depguard
+    - dogsled
+    - dupl
+    - errcheck
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - golint
+    - gomnd
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - noctx
+    - nolintlint
+    - rowserrcheck
+    - staticcheck
+    - structcheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - varcheck
+    - whitespace
+    - gochecknoglobals
+    - goerr113
+    - prealloc
+
+linters-settings:
+  govet:
+    check-shadowing: true
+
+skip-dirs:
+  - docker
+  - deployments
+  - scripts
+
+issues:
+  exclude-use-default: false
+  exclude-rules:
+    - path: api/schemas/schema.go
+      linters:
+        - gochecknoglobals
+    - path: api/schemas/asset.go
+      linters:
+        - gocyclo
+    - path: cmd/handler/handler.go
+      linters:
+        - gochecknoglobals
+        - gochecknoinits
+    - path: cmd/events/events.go
+      linters:
+        - gochecknoglobals
+        - gochecknoinits
+    - path: _test\.go
+      linters:
+        - dupl
+        - gochecknoglobals
+        - scopelint
