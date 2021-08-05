@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"sync"
 )
+
+// ErrAPIResponse is the error returned when the DataDog API returns a non-200 response
+var ErrAPIResponse = errors.New("error writing logs, bad response from API")
 
 // DataDogLog is a log message in DataDog format
 type DataDogLog struct {
@@ -95,7 +99,7 @@ func (d *DataDogLogger) Sync() error {
 		body, err := json.Marshal(d.Lines)
 
 		if err != nil {
-			_, wErr := fmt.Fprintf(os.Stderr, "error serializing logs %s", err)
+			_, wErr := fmt.Fprintf(os.Stderr, "error serializing logs %v", err)
 			if wErr != nil {
 				return wErr
 			}
@@ -117,7 +121,7 @@ func (d *DataDogLogger) Sync() error {
 func (d *DataDogLogger) Post(body []byte) error {
 	req, err := http.NewRequestWithContext(d.Context, http.MethodPost, d.URL, bytes.NewBuffer(body))
 	if err != nil {
-		_, wErr := fmt.Fprintf(os.Stderr, "error writing logs %s", err)
+		_, wErr := fmt.Fprintf(os.Stderr, "error writing logs %v", err)
 		if wErr != nil {
 			return wErr
 		}
@@ -127,19 +131,22 @@ func (d *DataDogLogger) Post(body []byte) error {
 	req.Header.Add("DD-API-KEY", d.APIKey)
 	resp, respErr := http.DefaultClient.Do(req)
 	if respErr != nil {
-		_, wErr := fmt.Fprintf(os.Stderr, "error writing logs %s", err)
+		_, wErr := fmt.Fprintf(os.Stderr, "error writing logs %v", respErr)
 		if wErr != nil {
 			return wErr
 		}
-		return err
+		return respErr
 	}
-	err = resp.Body.Close()
-	if err != nil {
-		_, wErr := fmt.Fprintf(os.Stderr, "error writing logs %s", err)
+	// nolint: errcheck
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	default:
+		_, wErr := fmt.Fprintf(os.Stderr, "error writing logs %d status code returned", resp.StatusCode)
 		if wErr != nil {
 			return wErr
 		}
-		return err
+		return ErrAPIResponse
 	}
-	return nil
 }
