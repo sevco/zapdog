@@ -11,10 +11,15 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
 
 // ErrAPIResponse is the error returned when the DataDog API returns a non-200 response
 var ErrAPIResponse = errors.New("error writing logs, bad response from API")
+
+const maxRetryWaitSeconds = 10
 
 // DataDogLog is a log message in DataDog format
 type DataDogLog struct {
@@ -36,6 +41,7 @@ type DataDogLogger struct {
 	URL     string
 	APIKey  string
 	Options Options
+	client  *http.Client
 	Lines   []DataDogLog
 	mutex   sync.Mutex
 }
@@ -50,12 +56,15 @@ func NewDataDogLogger(ctx context.Context, apiKey string, options Options) (*Dat
 	if err != nil {
 		return nil, err
 	}
+	retryClient := retryablehttp.NewClient()
+	retryClient.RetryWaitMax = maxRetryWaitSeconds * time.Second
 	return &DataDogLogger{
 		Context: ctx,
 		URL:     u,
 		APIKey:  apiKey,
 		Options: options,
 		Lines:   []DataDogLog{},
+		client:  retryClient.StandardClient(),
 	}, nil
 }
 
@@ -129,7 +138,7 @@ func (d *DataDogLogger) Post(body []byte) error {
 	}
 	req.Header.Add("Content-Type", "application/json")
 	req.Header.Add("DD-API-KEY", d.APIKey)
-	resp, respErr := http.DefaultClient.Do(req)
+	resp, respErr := d.client.Do(req)
 	if respErr != nil {
 		_, wErr := fmt.Fprintf(os.Stderr, "error writing logs %v", respErr)
 		if wErr != nil {
