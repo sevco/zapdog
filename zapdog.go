@@ -2,7 +2,9 @@ package zapdog
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +21,12 @@ import (
 // ErrAPIResponse is the error returned when the DataDog API returns a non-200 response
 var ErrAPIResponse = errors.New("error writing logs, bad response from API")
 
-const maxRetryWaitSeconds = 10
+const (
+	maxRetryWaitSeconds     = 10
+	maxLogLines             = 1000
+	maxUncompressedBodySize = 5 * 1024 * 1024
+	splits                  = 2
+)
 
 // DataDogLog is a log message in DataDog format
 type DataDogLog struct {
@@ -48,7 +55,7 @@ type DataDogLogger struct {
 
 // NewDataDogLogger creates a new logger that writes to DataDog
 func NewDataDogLogger(ctx context.Context, apiKey string, options Options) (*DataDogLogger, error) {
-	h := "https://http-intake.logs.datadoghq.com/v1/input"
+	h := "https://http-intake.logs.datadoghq.com/v2/logs"
 	if options.Host != "" {
 		h = options.Host
 	}
@@ -101,25 +108,74 @@ func (d *DataDogLogger) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+func serializeAndCompress(batch []DataDogLog) ([][]byte, error) {
+	body, err := json.Marshal(batch)
+	if err != nil {
+		_, wErr := fmt.Fprintf(os.Stderr, "error serializing logs %v", err)
+		if wErr != nil {
+			return nil, wErr
+		}
+		return nil, err
+	}
+	ret := make([][]byte, 0)
+	// if the serialized body is bigger then the max size, recursively split it
+	if binary.Size(body) > maxUncompressedBodySize {
+		half := len(batch) / splits
+		for _, idxRange := range [][]int{{0, half}, {half, len(batch)}} {
+			b1, bErr := serializeAndCompress(batch[idxRange[0]:idxRange[1]])
+			if bErr != nil {
+				return nil, bErr
+			}
+			ret = append(ret, b1...)
+		}
+	} else {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		_, err = zw.Write(body)
+		if err != nil {
+			_, wErr := fmt.Fprintf(os.Stderr, "error compressing logs %v", err)
+			if wErr != nil {
+				return nil, wErr
+			}
+			return nil, err
+		}
+
+		if err = zw.Close(); err != nil {
+			_, wErr := fmt.Fprintf(os.Stderr, "error compressing logs %v", err)
+			if wErr != nil {
+				return nil, wErr
+			}
+			return nil, err
+		}
+		ret = append(ret, buf.Bytes())
+	}
+
+	return ret, nil
+}
+
 // Sync posts data all available data to the DataDog API
 func (d *DataDogLogger) Sync() error {
 	if len(d.Lines) > 0 {
 		d.mutex.Lock()
-		body, err := json.Marshal(d.Lines)
-
-		if err != nil {
-			_, wErr := fmt.Fprintf(os.Stderr, "error serializing logs %v", err)
-			if wErr != nil {
-				return wErr
+		for i := 0; i < len(d.Lines); i += maxLogLines {
+			end := i + maxLogLines
+			if end > len(d.Lines) {
+				end = len(d.Lines)
 			}
-			return err
-		}
+			batch := d.Lines[i:end]
 
-		err = d.Post(body)
-		if err != nil {
-			return err
-		}
+			bodies, err := serializeAndCompress(batch)
+			if err != nil {
+				return err
+			}
 
+			for _, body := range bodies {
+				err = d.Post(body)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		d.Lines = []DataDogLog{}
 		d.mutex.Unlock()
 	}
@@ -137,6 +193,7 @@ func (d *DataDogLogger) Post(body []byte) error {
 		return err
 	}
 	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Content-Encoding", "gzip")
 	req.Header.Add("DD-API-KEY", d.APIKey)
 	resp, respErr := d.client.Do(req)
 	if respErr != nil {
@@ -146,7 +203,7 @@ func (d *DataDogLogger) Post(body []byte) error {
 		}
 		return respErr
 	}
-	// nolint: errcheck
+	//nolint: errcheck
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
